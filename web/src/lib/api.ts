@@ -1,6 +1,6 @@
 import { httpRequest } from "@/lib/request";
 
-export type AccountType = "Free" | "Plus" | "Pro" | "Team";
+export type AccountType = "Free" | "Plus" | "ProLite" | "Pro" | "Team";
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = "gpt-image-1" | "gpt-image-2";
 
@@ -10,6 +10,7 @@ export type Account = {
   type: AccountType;
   status: AccountStatus;
   quota: number;
+  imageQuotaUnknown?: boolean;
   email?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
