@@ -148,7 +148,8 @@ def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
 def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: str) -> Iterator[dict[str, Any]]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
-    sent_role = False
+    # Send immediate role chunk to prevent CDN first-byte timeout during image generation
+    yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     sent_text = ""
     for output in image_outputs:
         content = ""
@@ -161,20 +162,14 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
             content = output.text[len(sent_text):] if output.text.startswith(sent_text) else output.text
         if not content:
             continue
-        if not sent_role:
-            sent_role = True
-            yield completion_chunk(model, {"role": "assistant", "content": content}, None, completion_id, created)
-        else:
-            yield completion_chunk(model, {"content": content}, None, completion_id, created)
-    if not sent_role:
-        yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
+        yield completion_chunk(model, {"content": content}, None, completion_id, created)
     yield completion_chunk(model, {}, "stop", completion_id, created)
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    if is_image_chat_request(body):
+        return image_chat_events(body)
     if body.get("stream"):
-        if is_image_chat_request(body):
-            return image_chat_events(body)
         model, messages = text_chat_parts(body)
         backend = text_backend()
         def _stream():
@@ -183,8 +178,6 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
             finally:
                 backend.close()
         return _stream()
-    if is_image_chat_request(body):
-        return image_chat_response(body)
     model, messages = text_chat_parts(body)
     request = ConversationRequest(model=model, messages=messages)
     backend = text_backend()
