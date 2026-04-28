@@ -186,7 +186,11 @@ def collect_response(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     if is_text_response_request(body):
-        yield from stream_text_response(text_backend(), body)
+        backend = text_backend()
+        try:
+            yield from stream_text_response(backend, body)
+        finally:
+            backend.close()
         return
 
     prompt = extract_response_prompt(body.get("input"))

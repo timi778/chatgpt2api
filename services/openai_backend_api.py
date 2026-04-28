@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 from curl_cffi import requests
-from PIL import Image
 
 from services.account_service import account_service
 from services.proxy_service import proxy_settings
@@ -94,6 +93,19 @@ class OpenAIBackendAPI:
         })
         if self.access_token:
             self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+
+    def close(self) -> None:
+        """关闭底层 HTTP session，释放连接池。"""
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def _build_fp(self) -> Dict[str, str]:
         account = account_service.get_account(self.access_token) if self.access_token else {}
@@ -327,8 +339,10 @@ class OpenAIBackendAPI:
             candidate_path = Path(os.path.expanduser(image))
             if candidate_path.exists() and candidate_path.is_file():
                 file_name = candidate_path.name
+        from PIL import Image
         image = Image.open(BytesIO(data))
         width, height = image.size
+        image.close()
         mime_type = Image.MIME.get(image.format, "image/png")
         path = "/backend-api/files"
         response = self.session.post(

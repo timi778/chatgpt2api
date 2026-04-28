@@ -14,7 +14,7 @@ import tiktoken
 from services.account_service import account_service
 from services.config import config
 from services.openai_backend_api import OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS
+from utils.helper import IMAGE_MODELS, ensure_ok
 from utils.log import logger
 
 
@@ -518,17 +518,20 @@ def stream_image_outputs(
 
     image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
     if image_urls:
-        image_items = [
-            {"b64_json": base64.b64encode(image_data).decode("ascii")}
-            for image_data in backend.download_image_bytes(image_urls)
-        ]
-        data = format_image_result(
-            image_items,
-            request.prompt,
-            request.response_format,
-            request.base_url,
-            int(time.time()),
-        )["data"]
+        data: list[dict[str, Any]] = []
+        for img_url in image_urls:
+            response = backend.session.get(img_url, timeout=120)
+            ensure_ok(response, "image_download")
+            image_data = response.content
+            saved_url = save_image_bytes(image_data, request.base_url)
+            revised_prompt = request.prompt
+            if request.response_format == "b64_json":
+                b64 = base64.b64encode(image_data).decode("ascii")
+                del image_data
+                data.append({"b64_json": b64, "url": saved_url, "revised_prompt": revised_prompt})
+            else:
+                del image_data
+                data.append({"url": saved_url, "revised_prompt": revised_prompt})
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
         return
@@ -557,19 +560,22 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             returned_result = False
             try:
                 backend = OpenAIBackendAPI(access_token=token)
-                for output in stream_image_outputs(backend, request, index, request.n):
-                    if output.kind == "message" and request.message_as_error:
-                        raise ImageGenerationError(
-                            output.text or "Image generation was rejected by upstream policy.",
-                            status_code=400,
-                            error_type="invalid_request_error",
-                            code="content_policy_violation",
-                        )
-                    emitted = True
-                    emitted_for_token = True
-                    returned_message = output.kind == "message"
-                    returned_result = returned_result or output.kind == "result"
-                    yield output
+                try:
+                    for output in stream_image_outputs(backend, request, index, request.n):
+                        if output.kind == "message" and request.message_as_error:
+                            raise ImageGenerationError(
+                                output.text or "Image generation was rejected by upstream policy.",
+                                status_code=400,
+                                error_type="invalid_request_error",
+                                code="content_policy_violation",
+                            )
+                        emitted = True
+                        emitted_for_token = True
+                        returned_message = output.kind == "message"
+                        returned_result = returned_result or output.kind == "result"
+                        yield output
+                finally:
+                    backend.close()
                 if returned_message or not returned_result:
                     account_service.mark_image_result(token, False)
                     return

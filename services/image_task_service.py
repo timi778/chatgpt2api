@@ -59,8 +59,20 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
-    if task.get("data") is not None:
-        item["data"] = task.get("data")
+    data = task.get("data")
+    if isinstance(data, list) and data:
+        # Strip large base64 image data from in-memory listing to save memory
+        # Clients that need b64_json should use the image URL instead
+        stripped = []
+        for entry in data:
+            if isinstance(entry, dict):
+                clean = {k: v for k, v in entry.items() if k != "b64_json"}
+                stripped.append(clean)
+            else:
+                stripped.append(entry)
+        item["data"] = stripped
+    elif data is not None:
+        item["data"] = data
     if task.get("error"):
         item["error"] = task.get("error")
     return item
@@ -212,7 +224,14 @@ class ImageTaskService:
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message")) or "image task returned no image data"
                 raise RuntimeError(message)
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            # Strip b64_json from stored task data to save memory (URL is preserved)
+            stripped_data = []
+            for entry in data:
+                if isinstance(entry, dict):
+                    stripped_data.append({k: v for k, v in entry.items() if k != "b64_json"})
+                else:
+                    stripped_data.append(entry)
+            self._update_task(key, status=TASK_STATUS_SUCCESS, data=stripped_data, error="")
         except Exception as exc:
             self._update_task(key, status=TASK_STATUS_ERROR, error=str(exc) or "image task failed", data=[])
 
@@ -294,6 +313,17 @@ class ImageTaskService:
         ]
         for key in removed_keys:
             self._tasks.pop(key, None)
+        # Hard cap: keep at most 200 tasks to prevent unbounded memory growth
+        max_tasks = 200
+        if len(self._tasks) > max_tasks:
+            sorted_keys = sorted(
+                self._tasks.keys(),
+                key=lambda k: str(self._tasks[k].get("updated_at") or ""),
+                reverse=True,
+            )
+            for key in sorted_keys[max_tasks:]:
+                self._tasks.pop(key, None)
+                removed_keys.append(key)
         return bool(removed_keys)
 
 

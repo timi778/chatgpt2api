@@ -176,9 +176,20 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_image_chat_request(body):
             return image_chat_events(body)
         model, messages = text_chat_parts(body)
-        return stream_text_chat_completion(text_backend(), messages, model)
+        backend = text_backend()
+        def _stream():
+            try:
+                yield from stream_text_chat_completion(backend, messages, model)
+            finally:
+                backend.close()
+        return _stream()
     if is_image_chat_request(body):
         return image_chat_response(body)
     model, messages = text_chat_parts(body)
     request = ConversationRequest(model=model, messages=messages)
-    return completion_response(model, collect_text(text_backend(), request), messages=messages)
+    backend = text_backend()
+    try:
+        result = completion_response(model, collect_text(backend, request), messages=messages)
+    finally:
+        backend.close()
+    return result

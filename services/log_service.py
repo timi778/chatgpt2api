@@ -38,7 +38,7 @@ class LogService:
         if not self.path.exists():
             return []
         items: list[dict[str, Any]] = []
-        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
+        for line in self._tail_lines(max_lines=limit * 5):
             try:
                 item = json.loads(line)
             except Exception:
@@ -55,6 +55,37 @@ class LogService:
             if len(items) >= limit:
                 break
         return items
+
+    def _tail_lines(self, max_lines: int = 1000, chunk_size: int = 8192) -> list[str]:
+        """Read only the tail of the file to avoid loading entire log into memory."""
+        try:
+            file_size = self.path.stat().st_size
+        except OSError:
+            return []
+        lines: list[str] = []
+        with self.path.open("rb") as f:
+            if file_size <= chunk_size:
+                f.seek(0)
+                content = f.read().decode("utf-8", errors="ignore")
+                return content.splitlines()
+            position = file_size
+            remainder = b""
+            while position > 0 and len(lines) < max_lines:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                f.seek(position)
+                chunk = f.read(read_size)
+                data = chunk + remainder
+                parts = data.split(b"\n")
+                remainder = parts[0]
+                for raw_line in reversed(parts[1:]):
+                    if raw_line:
+                        lines.append(raw_line.decode("utf-8", errors="ignore"))
+                    if len(lines) >= max_lines:
+                        break
+            if remainder and len(lines) < max_lines:
+                lines.append(remainder.decode("utf-8", errors="ignore"))
+        return lines
 
 
 log_service = LogService(DATA_DIR / "logs.jsonl")
