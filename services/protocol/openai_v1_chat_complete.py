@@ -167,9 +167,9 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
-    if is_image_chat_request(body):
-        return image_chat_events(body)
     if body.get("stream"):
+        if is_image_chat_request(body):
+            return image_chat_events(body)
         model, messages = text_chat_parts(body)
         backend = text_backend()
         def _stream():
@@ -178,6 +178,8 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
             finally:
                 backend.close()
         return _stream()
+    if is_image_chat_request(body):
+        return image_chat_response(body)
     model, messages = text_chat_parts(body)
     request = ConversationRequest(model=model, messages=messages)
     backend = text_backend()
