@@ -501,8 +501,8 @@ class OpenAIBackendAPI:
                  "sediment_ids": sediment_ids})
         return sorted(records, key=lambda item: item["create_time"])
 
-    def _poll_image_results(self, conversation_id: str, timeout_secs: float = 120.0) -> tuple[list[str], list[str]]:
-        """轮询 conversation，直到拿到图片文件 id 或超时。"""
+    def _poll_image_results(self, conversation_id: str, timeout_secs: float = 120.0) -> Iterator:
+        """轮询 conversation，直到拿到图片文件 id 或超时。每个轮询周期 yield 进度文本，最终 yield (file_ids, sediment_ids)。"""
         start = time.time()
         attempt = 0
         logger.info({"event": "image_poll_start", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
@@ -520,14 +520,18 @@ class OpenAIBackendAPI:
             logger.debug({"event": "image_poll_check", "conversation_id": conversation_id, "attempt": attempt, "file_ids": file_ids, "sediment_ids": sediment_ids})
             if file_ids:
                 logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids, "sediment_ids": sediment_ids})
-                return file_ids, sediment_ids
+                yield (file_ids, sediment_ids)
+                return
             if sediment_ids:
                 logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": [], "sediment_ids": sediment_ids})
-                return [], sediment_ids
-            logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id, "elapsed_secs": round(time.time() - start, 1)})
+                yield ([], sediment_ids)
+                return
+            elapsed = round(time.time() - start, 1)
+            logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id, "elapsed_secs": elapsed})
+            yield f"⏳ 正在等待图片生成结果... ({elapsed}s / {int(timeout_secs)}s)"
             time.sleep(4)
         logger.info({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
-        return [], []
+        yield ([], [])
 
     def _get_file_download_url(self, file_id: str) -> str:
         """获取文件下载地址。"""
@@ -625,15 +629,20 @@ class OpenAIBackendAPI:
             file_ids: list[str],
             sediment_ids: list[str],
             poll: bool = True,
-    ) -> list[str]:
+    ) -> Iterator:
+        """解析图片 URL。轮询时 yield 进度文本，最终 yield URL 列表。"""
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
         if poll and conversation_id and not file_ids and not sediment_ids:
             logger.info({"event": "image_resolve_poll_needed", "conversation_id": conversation_id})
-            polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id)
-            file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
-            sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
-        return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
+            for item in self._poll_image_results(conversation_id):
+                if isinstance(item, str):
+                    yield item
+                else:
+                    polled_file_ids, polled_sediment_ids = item
+                    file_ids.extend(x for x in polled_file_ids if x and x not in file_ids)
+                    sediment_ids.extend(x for x in polled_sediment_ids if x and x not in sediment_ids)
+        yield self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
         images = []

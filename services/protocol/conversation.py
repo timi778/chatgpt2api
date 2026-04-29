@@ -516,7 +516,19 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
 
-    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
+    image_urls: list[str] = []
+    for item in backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids):
+        if isinstance(item, str):
+            yield ImageOutput(
+                kind="progress",
+                model=request.model,
+                index=index,
+                total=total,
+                text=item,
+                upstream_event_type="image_poll",
+            )
+        else:
+            image_urls = item
     if image_urls:
         data: list[dict[str, Any]] = []
         for img_url in image_urls:
