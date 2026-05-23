@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import itertools
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -164,13 +163,6 @@ def _protocol_error_response(exc: Exception, status_code: int, sse: str) -> JSON
     return openai_error_response(message, status_code)
 
 
-def _next_item(items):
-    try:
-        return True, next(items)
-    except StopIteration:
-        return False, None
-
-
 @dataclass
 class LoggedCall:
     identity: dict[str, object]
@@ -200,21 +192,37 @@ class LoggedCall:
             return result
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
-        try:
-            has_first, first = await run_in_threadpool(_next_item, result)
-        except ImageGenerationError as exc:
-            self.log("调用失败", status="failed", error=str(exc))
-            return _image_error_response(exc)
-        except HTTPException as exc:
-            self.log("调用失败", status="failed", error=str(exc.detail))
-            raise
-        except Exception as exc:
-            self.log("调用失败", status="failed", error=str(exc))
-            return _protocol_error_response(exc, 502, sse)
-        if not has_first:
-            self.log("流式调用结束")
-            return StreamingResponse(sender(()), media_type="text/event-stream")
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
+        return StreamingResponse(
+            sender(self.stream(result)),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    async def run_async_json(self, handler, *args):
+        from services.async_response import async_json_heartbeat_response
+        from services.protocol.conversation import ImageGenerationError
+
+        def _run_logged() -> dict[str, Any]:
+            try:
+                result = handler(*args)
+                if not isinstance(result, dict):
+                    raise RuntimeError("async JSON image response cannot wrap streaming result")
+                self.log("调用完成", result)
+                return result
+            except ImageGenerationError as exc:
+                self.log("调用失败", status="failed", error=str(exc))
+                raise
+            except HTTPException as exc:
+                self.log("调用失败", status="failed", error=str(exc.detail))
+                raise
+            except Exception as exc:
+                self.log("调用失败", status="failed", error=str(exc))
+                raise
+
+        return await run_in_threadpool(async_json_heartbeat_response, _run_logged)
 
     def stream(self, items):
         urls: list[str] = []

@@ -222,9 +222,16 @@ class ConfigStore:
     @property
     def image_poll_timeout_secs(self) -> int:
         try:
-            return max(1, int(self.data.get("image_poll_timeout_secs", 120)))
+            return max(1, int(self.data.get("image_poll_timeout_secs", 360)))
         except (TypeError, ValueError):
-            return 120
+            return 360
+
+    @property
+    def image_response_heartbeat_secs(self) -> float:
+        try:
+            return max(1.0, float(self.data.get("image_response_heartbeat_secs", 5.0)))
+        except (TypeError, ValueError):
+            return 5.0
 
     @property
     def image_poll_interval_secs(self) -> float:
@@ -335,6 +342,7 @@ class ConfigStore:
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_poll_interval_secs"] = self.image_poll_interval_secs
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
+        data["image_response_heartbeat_secs"] = self.image_response_heartbeat_secs
         data["image_account_concurrency"] = self.image_account_concurrency
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts

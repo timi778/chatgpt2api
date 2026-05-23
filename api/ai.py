@@ -16,6 +16,7 @@ from services.protocol import (
     openai_v1_models,
     openai_v1_response,
 )
+from utils.helper import has_response_image_generation_tool, is_image_chat_request
 
 
 class ImageGenerationRequest(BaseModel):
@@ -85,6 +86,8 @@ def create_router() -> APIRouter:
         payload["base_url"] = resolve_image_base_url(request)
         call = LoggedCall(identity, "/v1/images/generations", body.model, "文生图", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
+        if not body.stream:
+            return await call.run_async_json(openai_v1_image_generations.handle, payload)
         return await call.run(openai_v1_image_generations.handle, payload)
 
     @router.post("/v1/images/edits")
@@ -100,6 +103,8 @@ def create_router() -> APIRouter:
         await filter_or_log(call, prompt)
         payload["images"] = await read_image_sources(image_sources)
         payload["base_url"] = resolve_image_base_url(request)
+        if not payload.get("stream"):
+            return await call.run_async_json(openai_v1_image_edit.handle, payload)
         return await call.run(openai_v1_image_edit.handle, payload)
 
     @router.post("/v1/chat/completions")
@@ -116,16 +121,22 @@ def create_router() -> APIRouter:
         request_preview = request_text(payload.get("prompt"), payload.get("messages"))
         call = LoggedCall(identity, "/v1/chat/completions", model, "文本生成", request_text=request_preview)
         await filter_or_log(call, request_preview)
+        if is_image_chat_request(payload) and not payload.get("stream"):
+            return await call.run_async_json(openai_v1_chat_complete.handle, payload)
         return await call.run(openai_v1_chat_complete.handle, payload)
 
     @router.post("/v1/responses")
-    async def create_response(body: ResponseCreateRequest, authorization: str | None = Header(default=None)):
+    async def create_response(body: ResponseCreateRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
+        if not str(payload.get("base_url") or "").strip():
+            payload["base_url"] = resolve_image_base_url(request)
         model = str(payload.get("model") or "auto")
         request_preview = request_text(payload.get("input"), payload.get("instructions"))
         call = LoggedCall(identity, "/v1/responses", model, "Responses", request_text=request_preview)
         await filter_or_log(call, request_preview)
+        if has_response_image_generation_tool(payload) and not payload.get("stream"):
+            return await call.run_async_json(openai_v1_response.handle, payload)
         return await call.run(openai_v1_response.handle, payload)
 
     @router.post("/v1/messages")

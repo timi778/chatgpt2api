@@ -1,7 +1,9 @@
 import base64
 import hashlib
 import json
+import queue
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -154,12 +156,44 @@ def ensure_ok(response: requests.Response, context: str) -> None:
     raise UpstreamHTTPError(context, response.status_code, body, retry_after=retry_after)
 
 
+def _sse_heartbeat_secs() -> float:
+    try:
+        from services.config import config
+
+        return float(config.image_response_heartbeat_secs)
+    except Exception:
+        return 5.0
+
+
 def sse_json_stream(items) -> Iterator[str]:
     yield ": stream-open\n\n"
-    try:
-        for item in items:
+    heartbeat_secs = max(1.0, _sse_heartbeat_secs())
+    events: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for item in items:
+                events.put(("item", item))
+        except Exception as exc:
+            events.put(("error", exc))
+        finally:
+            events.put(("done", None))
+
+    threading.Thread(target=_pump, daemon=True, name="sse-json-stream").start()
+
+    while True:
+        try:
+            kind, payload = events.get(timeout=heartbeat_secs)
+        except queue.Empty:
+            yield ": ping\n\n"
+            continue
+        if kind == "done":
+            break
+        if kind == "item":
+            item = payload
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-    except Exception as exc:
+            continue
+        exc = payload if isinstance(payload, Exception) else RuntimeError(str(payload))
         logger.warning({
             "event": "sse_stream_error",
             "error_type": exc.__class__.__name__,
@@ -169,6 +203,7 @@ def sse_json_stream(items) -> Iterator[str]:
             "error": {"message": str(exc), "type": exc.__class__.__name__}
         }
         yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
+        break
     yield "data: [DONE]\n\n"
 
 
