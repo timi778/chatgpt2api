@@ -30,6 +30,7 @@ class AccountService:
     _REFRESH_TOKEN_KEEPALIVE_SECONDS = 3 * 24 * 60 * 60
     _REFRESH_TOKEN_KEEPALIVE_ERROR_BACKOFF_SECONDS = 6 * 60 * 60
     _REFRESH_TOKEN_KEEPALIVE_BATCH_SIZE = 3
+    _ACCOUNT_REFRESH_BATCH_SIZE = 5
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
@@ -1453,43 +1454,42 @@ class AccountService:
 
         refreshed = 0
         errors = []
-        max_workers = min(10, len(access_tokens))
+        batch_size = max(1, self._ACCOUNT_REFRESH_BATCH_SIZE)
 
         if progress_id:
             self.init_refresh_progress(progress_id, len(access_tokens))
 
-        executor = ThreadPoolExecutor(max_workers=max_workers)
         try:
-            futures = {
-                executor.submit(self.fetch_remote_info, token, "refresh_accounts", defer_invalid_removal): token
-                for token in access_tokens
-            }
-            for future in as_completed(futures):
-                token = futures[future]
-                try:
-                    account = future.result()
-                except (KeyboardInterrupt, SystemExit):
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
-                except Exception as exc:
-                    error_str = str(exc)
-                    # TLS/代理连接错误是网络问题，不计入账号失败
-                    from services.protocol.conversation import is_tls_connection_error
-                    if not is_tls_connection_error(error_str):
-                        errors.append({"token": anonymize_token(token), "error": error_str})
-                else:
-                    if account is not None:
-                        refreshed += 1
+            for start in range(0, len(access_tokens), batch_size):
+                batch_tokens = access_tokens[start:start + batch_size]
+                with ThreadPoolExecutor(max_workers=len(batch_tokens)) as executor:
+                    futures = {
+                        executor.submit(self.fetch_remote_info, token, "refresh_accounts", defer_invalid_removal): token
+                        for token in batch_tokens
+                    }
+                    for future in as_completed(futures):
+                        token = futures[future]
+                        try:
+                            account = future.result()
+                        except (KeyboardInterrupt, SystemExit):
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            raise
+                        except Exception as exc:
+                            error_str = str(exc)
+                            # TLS/代理连接错误是网络问题，不计入账号失败
+                            from services.protocol.conversation import is_tls_connection_error
+                            if not is_tls_connection_error(error_str):
+                                errors.append({"token": anonymize_token(token), "error": error_str})
+                        else:
+                            if account is not None:
+                                refreshed += 1
 
-                if progress_id:
-                    self.update_refresh_progress(progress_id, token)
+                        if progress_id:
+                            self.update_refresh_progress(progress_id, token)
         except (KeyboardInterrupt, SystemExit):
             if progress_id:
                 self.finish_refresh_progress(progress_id, error="cancelled")
-            executor.shutdown(wait=False, cancel_futures=True)
             raise
-        else:
-            executor.shutdown(wait=True, cancel_futures=True)
 
         # 自动重新登录异常账号（仅当配置开启时）
         relogined = 0
