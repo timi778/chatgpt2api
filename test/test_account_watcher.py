@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
@@ -45,19 +47,38 @@ class AccountWatcherTests(unittest.TestCase):
 
         stop_event = threading.Event()
         fake_service = _FakeAccountService(stop_event)
+        original_status = support.get_account_refresh_status()
 
-        with (
-            patch.object(support, "account_service", fake_service),
-            patch.object(support, "config", _FakeConfig()),
-        ):
-            thread = support.start_limited_account_watcher(stop_event)
-            thread.join(timeout=2)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                support._account_refresh_status.clear()
+                support._account_refresh_status.update(support._DEFAULT_ACCOUNT_REFRESH_STATUS)
+                with (
+                    patch.object(support, "ACCOUNT_REFRESH_STATUS_FILE", Path(tmp_dir) / "status.json"),
+                    patch.object(support, "account_service", fake_service),
+                    patch.object(support, "config", _FakeConfig()),
+                ):
+                    thread = support.start_limited_account_watcher(stop_event)
+                    thread.join(timeout=2)
+                    status = support.get_account_refresh_status()
+            finally:
+                support._account_refresh_status.clear()
+                support._account_refresh_status.update(original_status)
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(
             fake_service.refresh_calls,
             [(["normal-token", "limited-token", "abnormal-token"], False)],
         )
+        self.assertFalse(status["running"])
+        self.assertEqual(status["last_status"], "success")
+        self.assertEqual(status["last_total"], 3)
+        self.assertEqual(status["last_refreshed"], 3)
+        self.assertEqual(status["last_error_count"], 0)
+        self.assertEqual(status["interval_seconds"], 3600)
+        self.assertTrue(status["last_started_at"])
+        self.assertTrue(status["last_finished_at"])
+        self.assertTrue(status["next_run_at"])
 
 
 if __name__ == "__main__":

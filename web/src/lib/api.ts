@@ -83,6 +83,24 @@ export type AccountRefreshResponse = {
   errors: Array<{ access_token: string; error: string }>;
 };
 
+export type AccountAutoRefreshStatus = {
+  running: boolean;
+  last_status: "idle" | "running" | "success" | "partial_error" | "error" | "interrupted" | string;
+  last_started_at?: string | null;
+  last_finished_at?: string | null;
+  last_duration_ms?: number | null;
+  last_error?: string | null;
+  last_total: number;
+  last_refreshed: number;
+  last_error_count: number;
+  last_relogined: number;
+  last_keepalive_total: number;
+  last_keepalive_refreshed: number;
+  last_keepalive_error_count: number;
+  interval_seconds?: number | null;
+  next_run_at?: string | null;
+};
+
 export type RefreshProgressResponse = {
   total: number;
   processed: number;
@@ -506,6 +524,10 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
     method: "POST",
     body: settings,
   });
+}
+
+export async function fetchAccountAutoRefreshStatus() {
+  return httpRequest<{ status: AccountAutoRefreshStatus }>("/api/account-refresh/status");
 }
 
 export async function testBackupConnection() {

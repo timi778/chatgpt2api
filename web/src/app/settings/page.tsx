@@ -5,6 +5,7 @@ import { LoaderCircle } from "lucide-react";
 
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
+import { AutoRefreshStatusCard } from "./components/auto-refresh-status-card";
 import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ConfigCard } from "./components/config-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
@@ -66,6 +67,7 @@ function SettingsPageContent() {
       <SettingsHeader />
       <section className="space-y-6">
         <ConfigCard />
+        <AutoRefreshStatusCard />
         <BackupSettingsCard />
         <UserKeysCard />
         <CPAPoolsCard />
