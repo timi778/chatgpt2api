@@ -66,8 +66,8 @@ function SettingsPageContent() {
       <SettingsDataController />
       <SettingsHeader />
       <section className="space-y-6">
-        <ConfigCard />
         <AutoRefreshStatusCard />
+        <ConfigCard />
         <BackupSettingsCard />
         <UserKeysCard />
         <CPAPoolsCard />
