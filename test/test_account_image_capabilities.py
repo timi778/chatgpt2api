@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -145,6 +147,33 @@ class AccountCapabilityTests(unittest.TestCase):
                 config.data.pop("auto_remove_invalid_accounts", None)
             else:
                 config.data["auto_remove_invalid_accounts"] = original_value
+
+    def test_password_relogin_batches_limit_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service._ACCOUNT_RELOGIN_BATCH_SIZE = 2
+            lock = threading.Lock()
+            active = 0
+            max_active = 0
+            completed: list[str] = []
+
+            def fake_relogin(token: str, email: str, password: str, event: str, progress_id: str | None = None) -> None:
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                    completed.append(token)
+
+            service._password_re_login_thread = fake_relogin  # type: ignore[method-assign]
+            tasks = [(f"token-{index}", f"user-{index}@example.com", "password") for index in range(5)]
+
+            service._run_password_relogin_batches(tasks, "test")
+
+            self.assertEqual(len(completed), len(tasks))
+            self.assertLessEqual(max_active, 2)
 
 
 class TokenLogTests(unittest.TestCase):

@@ -31,6 +31,7 @@ class AccountService:
     _REFRESH_TOKEN_KEEPALIVE_ERROR_BACKOFF_SECONDS = 6 * 60 * 60
     _REFRESH_TOKEN_KEEPALIVE_BATCH_SIZE = 3
     _ACCOUNT_REFRESH_BATCH_SIZE = 5
+    _ACCOUNT_RELOGIN_BATCH_SIZE = 5
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
@@ -585,6 +586,44 @@ class AccountService:
             self.remove_invalid_token(access_token, f"{event}:password_relogin_exception", quiet=True)
             if progress_id:
                 self.update_relogin_progress(progress_id, access_token, "异常", str(exc))
+
+    def _run_password_relogin_batches(
+        self,
+        tasks: list[tuple[str, str, str]],
+        event: str,
+        progress_id: str | None = None,
+    ) -> None:
+        batch_size = max(1, self._ACCOUNT_RELOGIN_BATCH_SIZE)
+        for start in range(0, len(tasks), batch_size):
+            batch = tasks[start:start + batch_size]
+            threads = [
+                Thread(
+                    target=self._password_re_login_thread,
+                    args=(token, email, password, event, progress_id),
+                    daemon=True,
+                )
+                for token, email, password in batch
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+    def _start_password_relogin_batches(
+        self,
+        tasks: list[tuple[str, str, str]],
+        event: str,
+        progress_id: str | None = None,
+    ) -> Thread | None:
+        if not tasks:
+            return None
+        thread = Thread(
+            target=self._run_password_relogin_batches,
+            args=(tasks, event, progress_id),
+            daemon=True,
+        )
+        thread.start()
+        return thread
 
     def _login_with_password(self, email: str, password: str) -> dict:
         """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
@@ -1492,7 +1531,7 @@ class AccountService:
             raise
 
         # 自动重新登录异常账号（仅当配置开启时）
-        relogined = 0
+        relogin_tasks: list[tuple[str, str, str]] = []
         if config.auto_relogin_after_refresh:
             for token in access_tokens:
                 account = self.get_account(token)
@@ -1505,13 +1544,10 @@ class AccountService:
                 password = str(account.get("password") or "").strip()
                 if not email or not password:
                     continue
-                t = Thread(
-                    target=self._password_re_login_thread,
-                    args=(token, email, password, "auto_relogin_after_refresh"),
-                    daemon=True,
-                )
-                t.start()
-                relogined += 1
+                relogin_tasks.append((token, email, password))
+            self._start_password_relogin_batches(relogin_tasks, "auto_relogin_after_refresh")
+
+        relogined = len(relogin_tasks)
 
         result = {
             "refreshed": refreshed,
@@ -1544,6 +1580,7 @@ class AccountService:
         relogined = 0
         skipped = 0
         errors = []
+        relogin_tasks: list[tuple[str, str, str]] = []
 
         for token in access_tokens:
             account = self.get_account(token)
@@ -1561,14 +1598,10 @@ class AccountService:
                     self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码")
                 continue
 
-            # 在新线程中执行密码重新登录
-            t = Thread(
-                target=self._password_re_login_thread,
-                args=(token, email, password, "manual_relogin", progress_id),
-                daemon=True,
-            )
-            t.start()
+            relogin_tasks.append((token, email, password))
             relogined += 1
+
+        self._start_password_relogin_batches(relogin_tasks, "manual_relogin", progress_id)
 
         result = {
             "relogined": relogined,
