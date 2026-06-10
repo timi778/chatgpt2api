@@ -130,6 +130,39 @@ class AccountService:
     def _save_accounts(self) -> None:
         self.storage.save_accounts(list(self._accounts.values()))
 
+    def _uses_live_account_storage(self) -> bool:
+        try:
+            info = self.storage.get_backend_info()
+        except Exception:
+            return False
+        return str(info.get("type") or "").strip().lower() == "database"
+
+    def _reload_live_accounts(self) -> None:
+        if not self._uses_live_account_storage():
+            return
+        try:
+            loaded_accounts = self._load_accounts()
+        except Exception as exc:
+            print(f"[account-service] failed to reload database accounts: {exc}", flush=True)
+            return
+        with self._image_slot_condition:
+            self._accounts = loaded_accounts
+            self._image_inflight = {
+                token: count
+                for token, count in self._image_inflight.items()
+                if token in self._accounts
+            }
+            self._token_aliases = {
+                old: new
+                for old, new in self._token_aliases.items()
+                if old in self._accounts or new in self._accounts
+            }
+            if self._accounts:
+                self._index %= len(self._accounts)
+            else:
+                self._index = 0
+            self._image_slot_condition.notify_all()
+
     @staticmethod
     def _is_image_account_available(account: dict) -> bool:
         if not isinstance(account, dict):
@@ -926,6 +959,7 @@ class AccountService:
         }
 
     def list_tokens(self) -> list[str]:
+        self._reload_live_accounts()
         with self._lock:
             return list(self._accounts)
 
@@ -1007,6 +1041,7 @@ class AccountService:
         基于本地缓存做初筛，然后通过 fetch_remote_info 做远程验证（token 有效性、配额等）。
         限制最大尝试次数防止 token rotation 导致无限循环。
         """
+        self._reload_live_accounts()
         max_attempts = 20  # 防止无限循环
         attempted_tokens: set[str] = set()
         for _attempt in range(max_attempts):
@@ -1041,12 +1076,13 @@ class AccountService:
         )
 
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
+        self._reload_live_accounts()
         excluded = set(excluded_tokens or set())
         with self._lock:
             candidates = [
                 token
                 for account in self._accounts.values()
-                if account.get("status") not in {"禁用", "异常"}
+                if account.get("status") == "正常"
                    and (token := account.get("access_token") or "")
                    and token not in excluded
             ]
@@ -1087,12 +1123,14 @@ class AccountService:
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
             return None
+        self._reload_live_accounts()
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             account = self._accounts.get(access_token)
             return dict(account) if account else None
 
     def list_accounts(self) -> list[dict]:
+        self._reload_live_accounts()
         with self._lock:
             return [dict(item) for item in self._accounts.values()]
 
@@ -1669,6 +1707,7 @@ class AccountService:
         return items
 
     def get_stats(self) -> dict:
+        self._reload_live_accounts()
         with self._lock:
             items = list(self._accounts.values())
         total = len(items)

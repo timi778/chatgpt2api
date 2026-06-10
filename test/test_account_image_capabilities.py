@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
@@ -16,6 +17,31 @@ from services.config import config
 from services.openai_backend_api import InvalidAccessTokenError
 from services.storage.json_storage import JSONStorageBackend
 from utils.helper import anonymize_token, split_image_model
+
+
+class _LiveDatabaseStorage:
+    def __init__(self, accounts: list[dict[str, Any]] | None = None):
+        self.accounts = list(accounts or [])
+        self.saved_accounts: list[list[dict[str, Any]]] = []
+
+    def load_accounts(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.accounts]
+
+    def save_accounts(self, accounts: list[dict[str, Any]]) -> None:
+        self.accounts = [dict(item) for item in accounts]
+        self.saved_accounts.append([dict(item) for item in accounts])
+
+    def load_auth_keys(self) -> list[dict[str, Any]]:
+        return []
+
+    def save_auth_keys(self, auth_keys: list[dict[str, Any]]) -> None:
+        pass
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "healthy", "backend": "database"}
+
+    def get_backend_info(self) -> dict[str, Any]:
+        return {"type": "database"}
 
 
 class AccountCapabilityTests(unittest.TestCase):
@@ -98,6 +124,36 @@ class AccountCapabilityTests(unittest.TestCase):
 
             self.assertEqual(plus_token, "token-plus")
             self.assertEqual(pro_token, "token-pro")
+
+    def test_text_access_token_reloads_database_accounts_before_selection(self) -> None:
+        storage = _LiveDatabaseStorage()
+        service = AccountService(storage)
+        storage.accounts = [{"access_token": "db-token", "status": "正常", "quota": 0}]
+
+        self.assertEqual(service.get_text_access_token(), "db-token")
+
+    def test_text_access_token_uses_only_normal_database_accounts(self) -> None:
+        storage = _LiveDatabaseStorage(
+            [
+                {"access_token": "limited-token", "status": "限流", "quota": 0},
+                {"access_token": "disabled-token", "status": "禁用", "quota": 0},
+                {"access_token": "normal-token", "status": "正常", "quota": 0},
+            ]
+        )
+        service = AccountService(storage)
+
+        self.assertEqual(service.get_text_access_token(), "normal-token")
+
+    def test_image_access_token_reloads_database_accounts_before_selection(self) -> None:
+        storage = _LiveDatabaseStorage()
+        service = AccountService(storage)
+        storage.accounts = [{"access_token": "db-image-token", "status": "正常", "quota": 2}]
+        service.fetch_remote_info = lambda access_token, event="fetch_remote_info": service.get_account(access_token)
+
+        token = service.get_available_access_token()
+        service.release_image_slot(token)
+
+        self.assertEqual(token, "db-image-token")
 
     def test_refresh_accounts_can_remove_invalid_token_without_confirmation_delay(self) -> None:
         original_value = config.data.get("auto_remove_invalid_accounts")
