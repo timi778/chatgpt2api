@@ -22,7 +22,8 @@ ARG TARGETARCH
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    TZ=Asia/Shanghai
 
 WORKDIR /app
 
@@ -31,6 +32,7 @@ WORKDIR /app
 # - libpq-dev: PostgreSQL 客户端库
 # - gcc: 编译 psycopg2-binary 需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
     git \
     libpq-dev \
     gcc \
