@@ -26,6 +26,9 @@ class _FakeAccountService:
     def list_refresh_token_keepalive_tokens(self) -> list[str]:
         return []
 
+    def list_expiring_access_tokens(self) -> list[str]:
+        return []
+
     def refresh_accounts(
         self,
         tokens: list[str],

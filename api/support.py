@@ -180,7 +180,10 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
             )
             try:
                 tokens = account_service.list_tokens()
+                expiring_tokens = account_service.list_expiring_access_tokens()
                 keepalive_tokens = account_service.list_refresh_token_keepalive_tokens()
+                expiring_token_set = set(expiring_tokens)
+                keepalive_tokens = [token for token in keepalive_tokens if token not in expiring_token_set]
                 refresh_result: dict[str, object] = {"refreshed": 0, "errors": [], "relogined": 0}
                 keepalive_result: dict[str, object] = {"refreshed": 0, "errors": []}
                 _update_account_refresh_status(

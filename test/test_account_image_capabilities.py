@@ -231,7 +231,6 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(len(completed), len(tasks))
             self.assertLessEqual(max_active, 2)
 
-
 class TokenLogTests(unittest.TestCase):
     def test_anonymize_token_hides_raw_value(self) -> None:
         token = "super-secret-token"
