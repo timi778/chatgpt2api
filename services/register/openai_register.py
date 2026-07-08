@@ -19,8 +19,6 @@ from curl_cffi import requests
 from services.account_service import account_service
 from services.proxy_service import ClearanceBundle, proxy_settings
 from services.register import mail_provider
-from utils.sentinel import build_sentinel_tokens, SENTINEL_SDK_VERSION, SENTINEL_SDK_URL, SENTINEL_SO_OBSERVER_MS
-from services.register import domain_stats
 
 base_dir = Path(__file__).resolve().parent
 config = {
@@ -301,7 +299,7 @@ class SentinelTokenGenerator:
             4294705152,
             random.random(),
             self.user_agent,
-            SENTINEL_SDK_URL,
+            "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js",
             None,
             None,
             "en-US",
@@ -667,37 +665,6 @@ class PlatformRegistrar:
         step(index, f"platform authorize 完成[{landed or '?'}] url={str(getattr(resp, 'url', '') or '')[:160]}")
         return code_verifier
 
-    def _authorize_continue(self, email: str, index: int) -> None:
-        """邮箱提交阶段：补齐 authorize/continue 这一步，对齐浏览器真实注册流程。
-
-        浏览器真实注册流程在 authorize 之后、提交密码之前，会先 POST
-        /api/accounts/authorize/continue 提交邮箱。旧版代码直接跳到
-        user/register，缺少这一步会导致后续 create_account 阶段
-        registration_disallowed。
-        """
-        step(index, "开始提交邮箱(authorize/continue)")
-        url = f"{auth_base}/api/accounts/authorize/continue"
-        body = {"username": {"kind": "email", "value": email}}
-
-        def _do():
-            headers = self._json_headers(f"{auth_base}/create-account")
-            headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "authorize_continue")
-            return _headers_with_clearance(headers, url, self.proxy, self.clearance_user_agent)
-
-        resp, error = request_with_local_retry(self.session, "post", url, json=body, headers=_do(), allow_redirects=False, verify=False)
-        if _is_cloudflare_challenge(resp):
-            bundle = self._refresh_cloudflare_clearance(auth_base, index)
-            if bundle is None:
-                raise RuntimeError(_cloudflare_block_message(resp, reason=self.clearance_failure_reason))
-            resp, error = request_with_local_retry(self.session, "post", url, json=body, headers=_do(), allow_redirects=False, verify=False)
-            if _is_cloudflare_challenge(resp):
-                raise RuntimeError(_cloudflare_block_message(resp, "Cloudflare clearance 重试仍被拦截"))
-        if resp is None or resp.status_code != 200:
-            data = _response_json(resp) if resp is not None else {}
-            detail = json.dumps(data, ensure_ascii=False) if data else ""
-            raise RuntimeError(error or f"authorize_continue_http_{getattr(resp, 'status_code', 'unknown')}{f': {detail}' if detail else ''}")
-        step(index, "提交邮箱(authorize/continue)完成")
-
     def _register_user(self, email: str, password: str, index: int) -> None:
         step(index, "开始提交注册密码")
         url = f"{auth_base}/api/accounts/user/register"
@@ -750,59 +717,23 @@ class PlatformRegistrar:
     def _create_account(self, name: str, birthdate: str, index: int) -> str:
         step(index, "开始创建账号资料")
         url = f"{auth_base}/api/accounts/create_account"
-
-        # create_account 前先请求 Sentinel req，flow 使用 oauth_create_account。
-        # create_account 请求必须同时带两个 Sentinel header：
-        #   OpenAI-Sentinel-Token  — 标准 sentinel 令牌（SDK 生成的 PoW 解）
-        #   OpenAI-Sentinel-SO-Token — SO 令牌（来源在 Sentinel req 返回的 so 字段，
-        #                               生成方式和 proof-of-work 类似，也在官方 SDK 里）
-        # SO token 的采集/observer 等待时间按官方前端逻辑使用 5000ms。
-        sentinel_token, so_token = build_sentinel_tokens(
-            self.session,
-            self.device_id,
-            "oauth_create_account",
-            user_agent=self.clearance_user_agent or user_agent,
-            sec_ch_ua=sec_ch_ua,
-        )
-
-        # 日志：记录 token 长度、SDK 版本、so-token 是否生成（不打印明文）
-        step(
-            index,
-            f"sentinel sdk={SENTINEL_SDK_VERSION} flow=oauth_create_account "
-            f"token_len={len(sentinel_token)} so_token={'yes' if so_token else 'no'} so_len={len(so_token)} observer_ms={SENTINEL_SO_OBSERVER_MS}",
-        )
-
-        def _do():
-            headers = self._json_headers(f"{auth_base}/about-you")
-            headers["openai-sentinel-token"] = sentinel_token
-            if so_token:
-                headers["openai-sentinel-so-token"] = so_token
-            return _headers_with_clearance(headers, url, self.proxy, self.clearance_user_agent)
-
-        resp, error = request_with_local_retry(self.session, "post", url, json={"name": name, "birthdate": birthdate}, headers=_do(), verify=False)
+        headers = self._json_headers(f"{auth_base}/about-you")
+        headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "oauth_create_account")
+        headers = _headers_with_clearance(headers, url, self.proxy, self.clearance_user_agent)
+        resp, error = request_with_local_retry(self.session, "post", url, json={"name": name, "birthdate": birthdate}, headers=headers, verify=False)
         if _is_cloudflare_challenge(resp):
             bundle = self._refresh_cloudflare_clearance(auth_base, index)
             if bundle is None:
                 raise RuntimeError(_cloudflare_block_message(resp, reason=self.clearance_failure_reason))
-            # clearance 刷新后重新生成 sentinel + so token
-            sentinel_token, so_token = build_sentinel_tokens(
-                self.session,
-                self.device_id,
-                "oauth_create_account",
-                user_agent=self.clearance_user_agent or user_agent,
-                sec_ch_ua=sec_ch_ua,
-            )
-            step(index, f"sentinel(重试) sdk={SENTINEL_SDK_VERSION} token_len={len(sentinel_token)} so_token={'yes' if so_token else 'no'}")
-            resp, error = request_with_local_retry(self.session, "post", url, json={"name": name, "birthdate": birthdate}, headers=_do(), verify=False)
+            headers = self._json_headers(f"{auth_base}/about-you")
+            headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "oauth_create_account")
+            headers = _headers_with_clearance(headers, url, self.proxy, self.clearance_user_agent)
+            resp, error = request_with_local_retry(self.session, "post", url, json={"name": name, "birthdate": birthdate}, headers=headers, verify=False)
             if _is_cloudflare_challenge(resp):
                 raise RuntimeError(_cloudflare_block_message(resp, "Cloudflare clearance 重试仍被拦截"))
         if resp is None or resp.status_code not in (200, 302):
             data = _response_json(resp) if resp is not None else {}
-            error_code = str(data.get("code") or "")
-            error_msg = str(data.get("message") or "")
-            if error_code == "registration_disallowed":
-                step(index, f"创建账号失败[registration_disallowed]: {error_msg or '验证码已通过但创建被拒，优先检查 Sentinel/SO token 是否按官方 SDK 生成'}", "yellow")
-            elif data.get("message") == "Failed to create account. Please try again.":
+            if data.get("message") == "Failed to create account. Please try again.":
                 step(index, "创建账号失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "yellow")
             detail = f", detail={json.dumps(data, ensure_ascii=False)}" if data else ""
             raise RuntimeError(error or f"create_account_http_{getattr(resp, 'status_code', 'unknown')}{detail}")
@@ -934,20 +865,11 @@ class PlatformRegistrar:
             mail_provider.release_mailbox(mailbox)
             raise RuntimeError("邮箱服务未返回 address")
         label = str(mailbox.get("label") or "")
-        provider_name = str(mailbox.get("provider") or "")
-        domain = domain_stats.extract_domain(email)
         step(index, f"邮箱创建完成[{label}]: {email}")
-
-        # 检查域名是否已被停用（某些临时邮箱域名会被最终风控拒绝，成功率极低）
-        if domain and domain_stats.is_domain_disabled(provider_name, domain):
-            raise RuntimeError(f"邮箱域名 {domain} 已被停用（成功率过低），请更换邮箱 provider/domain")
-
         try:
             password = _random_password()
             first_name, last_name = _random_name()
             code_verifier = self._platform_authorize(email, index)
-            # 邮箱提交阶段补齐 authorize/continue，对齐浏览器真实注册流程
-            self._authorize_continue(email, index)
             self._register_user(email, password, index)
             self._send_otp(index)
             step(index, "开始等待注册验证码")
@@ -960,14 +882,8 @@ class PlatformRegistrar:
             tokens = self._finish_registration_and_exchange_tokens(code_verifier, continue_url, index)
         except Exception as error:
             mail_provider.mark_mailbox_result(mailbox, success=False, error=error)
-            # 按 provider/domain 分组记录失败统计
-            if domain:
-                domain_stats.record_attempt(provider_name, domain, success=False, error=str(error))
             raise
         mail_provider.mark_mailbox_result(mailbox, success=True)
-        # 按 provider/domain 分组记录成功统计
-        if domain:
-            domain_stats.record_attempt(provider_name, domain, success=True)
         return {
             "email": email,
             "password": password,
@@ -1001,11 +917,6 @@ def worker(index: int) -> dict:
             stats["done"] += 1
             stats["fail"] += 1
         log(f"任务{index} 注册失败，本次耗时{cost:.1f}s，原因: {e}", "red")
-        # 协议修复后仍有部分 registration_disallowed 时，按 provider/domain 分组统计
-        # 并自动停用低成功率域名（某些临时邮箱域名会被最终风控拒绝）
-        disabled = domain_stats.auto_disable_low_success()
-        if disabled:
-            log(f"自动停用低成功率域名: {', '.join(disabled)}", "yellow")
         return {"ok": False, "index": index, "error": str(e)}
     finally:
         registrar.close()

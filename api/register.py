@@ -26,11 +26,6 @@ class OutlookPoolResetRequest(BaseModel):
     scope: str | None = None
 
 
-class DomainStatsActionRequest(BaseModel):
-    provider: str = ""
-    domain: str = ""
-
-
 def create_router() -> APIRouter:
     router = APIRouter()
 
@@ -63,52 +58,6 @@ def create_router() -> APIRouter:
     async def reset_outlook_pool(body: OutlookPoolResetRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return {"register": register_service.reset_outlook_pool(body.scope or "all")}
-
-    @router.get("/api/register/domain-stats")
-    async def get_domain_stats(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        from services.register import domain_stats
-        stats = domain_stats.get_stats()
-        entries = []
-        for key, entry in stats.items():
-            provider, _, domain = key.partition("|")
-            total = int(entry.get("total") or 0)
-            success = int(entry.get("success") or 0)
-            entries.append({
-                "provider": provider,
-                "domain": domain,
-                "total": total,
-                "success": success,
-                "fail": int(entry.get("fail") or 0),
-                "success_rate": round(success / total, 4) if total else -1,
-                "disabled": bool(entry.get("disabled")),
-                "disabled_reason": str(entry.get("disabled_reason") or ""),
-                "last_error": str(entry.get("last_error") or ""),
-                "last_updated": str(entry.get("last_updated") or ""),
-            })
-        entries.sort(key=lambda x: (x["disabled"], x["success_rate"] if x["success_rate"] >= 0 else 1))
-        return {"stats": entries}
-
-    @router.post("/api/register/domain-stats/disable")
-    async def disable_domain(body: DomainStatsActionRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        from services.register import domain_stats
-        domain_stats.disable_domain(body.provider, body.domain, reason="manual")
-        return {"ok": True}
-
-    @router.post("/api/register/domain-stats/enable")
-    async def enable_domain(body: DomainStatsActionRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        from services.register import domain_stats
-        domain_stats.enable_domain(body.provider, body.domain)
-        return {"ok": True}
-
-    @router.post("/api/register/domain-stats/auto-disable")
-    async def auto_disable_domains(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        from services.register import domain_stats
-        disabled = domain_stats.auto_disable_low_success()
-        return {"disabled": disabled}
 
     @router.get("/api/register/events")
     async def register_events(token: str = ""):
